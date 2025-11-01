@@ -19,16 +19,36 @@ All required packages are already installed:
 
 ## Running the Application
 
-To run the GUI application:
+### Easy Method (Recommended)
+Use the provided PowerShell scripts:
 
+**To run the GUI:**
+```powershell
+.\run_gui.ps1
+```
+
+**To run the original model script:**
+```powershell
+.\run_model.ps1
+```
+
+### Manual Method
+**To run the GUI application:**
 ```powershell
 .\venv\Scripts\python.exe house_calculator_gui.py
 ```
 
-Or with the virtual environment activated:
-
+**To run the original model script:**
 ```powershell
+.\venv\Scripts\python.exe houseModel.py
+```
+
+**Or activate the virtual environment first:**
+```powershell
+.\venv\Scripts\Activate.ps1
 python house_calculator_gui.py
+# or
+python houseModel.py
 ```
 
 ## Features
