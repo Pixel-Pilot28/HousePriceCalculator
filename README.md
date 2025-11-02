@@ -6,17 +6,25 @@ A comprehensive Python GUI application to analyze different house purchase scena
 
 ### Critical Accuracy Improvements
 
-1. **Added Monthly Cash Flow Parameter**: The model now includes a monthly cash flow input ($5,000 default) representing money available for mortgage payments or investments.
+1. **Added Property Tax, Home Insurance, and Closing Costs** (Latest):
+   - **Property Tax Rate**: Default 1.2% of home value annually
+   - **Home Insurance Rate**: Default 0.5% of home value annually
+   - **Closing Costs**: Default 3% of purchase price (one-time)
+   - These costs now properly reduce investable cash flow and increase upfront costs
+   - All three scenarios account for ongoing ownership costs (PITI = Principal, Interest, Taxes, Insurance)
 
-2. **Fixed Cash Scenario Calculation**: 
+2. **Added Monthly Cash Flow Parameter**: The model now includes a monthly cash flow input ($5,000 default) representing money available for mortgage payments or investments.
+
+3. **Fixed Cash Scenario Calculation**: 
    - **Previously**: Cash scenario appeared artificially low because it didn't account for invested cash flow
    - **Now**: Correctly adds the future value of monthly cash flow that would have gone to mortgage payments
+   - **Also**: Properly deducts property tax and insurance from investable cash flow
 
-3. **Tax-Aware Stock Sales**: All scenarios use "gross-up" calculations to determine total stock sales needed to net specific cash amounts after capital gains taxes.
+4. **Tax-Aware Stock Sales**: All scenarios use "gross-up" calculations to determine total stock sales needed to net specific cash amounts after capital gains taxes.
 
-4. **Excess Cash Flow Investment**: Mortgage scenarios now properly invest any remaining cash flow after mortgage payments.
+5. **Excess Cash Flow Investment**: Mortgage scenarios now properly invest any remaining cash flow after all housing costs (mortgage + property tax + insurance).
 
-5. **Clarified Hybrid Scenario**: Simplified calculation - cash from stocks = price - borrowed amount.
+6. **Clarified Hybrid Scenario**: Simplified calculation - cash from stocks = price - borrowed amount + closing costs.
 
 ### Key Model Assumptions
 
@@ -25,6 +33,10 @@ A comprehensive Python GUI application to analyze different house purchase scena
   - Example: 60% cost basis = only 40% of sale proceeds are taxable gains
   - Higher ratio = less tax = more money stays invested
   - Adjust based on how long you've held investments and their growth
+- **Closing costs** (default 3%) are paid upfront from stock sales
+- **Property tax and home insurance** reduce monthly investable cash flow for all scenarios
+  - Cash buyers: Pay property tax & insurance but no mortgage
+  - Mortgage buyers: Pay mortgage + property tax + insurance (PITI)
 - **Mortgage payments come from monthly cash flow**, not from selling investments
 - **Excess cash flow is invested** at the expected investment return rate
 - **Mortgage interest is tax-deductible** at your income tax rate
@@ -108,7 +120,12 @@ The GUI allows you to customize all financial parameters:
 - **Housing Returns**: Expected and downside scenarios for home appreciation
 - **Capital Gains Tax**: Tax rate on stock sales
 - **Income Tax Rate**: Your income tax bracket (for mortgage interest deduction)
+- **Investment Cost Basis**: Percentage of your portfolio that is original principal (default 60%)
 - **Hybrid LTV Ratio**: Loan-to-value ratio for hybrid financing scenarios
+- **Monthly Cash Flow**: Available monthly amount for housing costs or investments (default $5,000)
+- **Property Tax Rate**: Annual property tax as percentage of home value (default 1.2%)
+- **Home Insurance Rate**: Annual insurance premium as percentage of home value (default 0.5%)
+- **Closing Cost Rate**: One-time closing costs as percentage of purchase price (default 3%)
 - **Time Horizons**: Years to analyze (comma-separated)
 - **Mortgage Terms**: Loan terms to compare (comma-separated)
 

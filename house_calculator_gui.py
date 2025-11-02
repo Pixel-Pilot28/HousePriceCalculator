@@ -36,8 +36,41 @@ class HouseCalculatorGUI:
         self.calculate(silent=True)
     
     def create_input_panel(self, parent):
-        input_frame = ttk.LabelFrame(parent, text="Input Parameters", padding="10")
-        input_frame.grid(row=0, column=0, rowspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+        # Create outer frame for the input panel
+        input_outer = ttk.LabelFrame(parent, text="Input Parameters", padding="10")
+        input_outer.grid(row=0, column=0, rowspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+        
+        # Create canvas for scrolling
+        canvas = tk.Canvas(input_outer, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(input_outer, orient="vertical", command=canvas.yview)
+        
+        # Create scrollable frame
+        input_frame = ttk.Frame(canvas)
+        
+        # Configure canvas
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack scrollbar and canvas
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Create window in canvas
+        canvas_frame = canvas.create_window((0, 0), window=input_frame, anchor="nw")
+        
+        # Configure scroll region when frame changes size
+        def configure_scroll_region(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            # Also update the canvas window width to match canvas width
+            canvas.itemconfig(canvas_frame, width=canvas.winfo_width())
+        
+        input_frame.bind("<Configure>", configure_scroll_region)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_frame, width=e.width))
+        
+        # Bind mousewheel to scroll
+        def on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
         
         row = 0
 
@@ -55,6 +88,9 @@ class HouseCalculatorGUI:
         row = self.add_numeric_input(input_frame, "Investment Cost Basis (%):", "cost_basis_ratio", 60.0, 0.0, 100.0, 1.0, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Hybrid LTV Ratio (%):", "ltv_ratio", 50.0, 0.0, 100.0, 0.5, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Monthly Cash Flow ($):", "monthly_cash_flow", 5000, 0, 20000, 100, row, kind="currency")
+        row = self.add_numeric_input(input_frame, "Property Tax Rate (%):", "property_tax_rate", 1.2, 0.0, 5.0, 0.1, row, kind="percent")
+        row = self.add_numeric_input(input_frame, "Home Insurance Rate (%):", "home_insurance_rate", 0.5, 0.0, 3.0, 0.1, row, kind="percent")
+        row = self.add_numeric_input(input_frame, "Closing Cost Rate (%):", "closing_cost_rate", 3.0, 0.0, 10.0, 0.1, row, kind="percent")
 
         ttk.Label(input_frame, text="Time Horizons (years, comma-separated):").grid(row=row, column=0, sticky=tk.W, pady=5)
         self.years_var = tk.StringVar(value="3,5,10")
@@ -355,32 +391,44 @@ class HouseCalculatorGUI:
 
     def simulate_scenario(self, price, down_payment, mortgage_rate, term, investment_return, 
                           housing_return, duration, mode, ltv, cap_gains_tax, income_tax, 
-                          initial_investment, monthly_cash_flow, cost_basis_ratio):
+                          initial_investment, monthly_cash_flow, cost_basis_ratio,
+                          property_tax_rate, home_insurance_rate, closing_cost_rate):
         """mode = 'cash', 'full', 'hybrid'"""
+        # Calculate one-time closing costs
+        closing_costs = price * closing_cost_rate
+        
+        # Calculate ongoing monthly ownership costs (property tax + insurance)
+        annual_property_tax = price * property_tax_rate
+        annual_insurance = price * home_insurance_rate
+        monthly_ownership_costs = (annual_property_tax + annual_insurance) / 12
+        
         if mode == 'cash':
-            # Cash purchase: sell stocks to buy house outright
-            net_cash_needed = price
+            # Cash purchase: sell stocks to buy house outright + closing costs
+            net_cash_needed = price + closing_costs
             gross_sale, tax_cost, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax, cost_basis_ratio)
 
             remaining_investments = initial_investment - gross_sale
             invested_balance = self.future_value(remaining_investments, investment_return, duration)
 
-            # BENEFIT: No mortgage payment, so monthly cash flow can be invested
-            invested_cash_flow = self.future_value_annuity(monthly_cash_flow, investment_return, duration)
+            # BENEFIT: No mortgage payment, but still pay property tax & insurance
+            # Invest cash flow remaining after ownership costs
+            cash_flow_to_invest = max(0, monthly_cash_flow - monthly_ownership_costs)
+            invested_cash_flow = self.future_value_annuity(cash_flow_to_invest, investment_return, duration)
 
             home_value = price * ((1 + housing_return) ** duration)
 
             net_worth = invested_balance + invested_cash_flow + home_value
 
             opportunity_cost = self.future_value(gross_sale, investment_return, duration) - gross_sale
-            total_cost = tax_cost + opportunity_cost
+            total_cost = tax_cost + opportunity_cost + closing_costs
 
             return net_worth, total_cost
 
         elif mode == 'full':
-            # Full mortgage: borrow (price - down_payment), pay down_payment from stocks
+            # Full mortgage: borrow (price - down_payment), pay down_payment + closing costs from stocks
             principal = price - down_payment
-            down_payment_sale, down_payment_tax, _ = self.gross_sale_needed(down_payment, cap_gains_tax, cost_basis_ratio)
+            net_cash_needed = down_payment + closing_costs
+            down_payment_sale, down_payment_tax, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax, cost_basis_ratio)
             
             # Calculate mortgage payment
             monthly_pmt = self.mortgage_payment(principal, mortgage_rate, term)
@@ -393,11 +441,14 @@ class HouseCalculatorGUI:
             interest_deduction = interest_paid * income_tax
             net_interest = interest_paid - interest_deduction
             
-            # Investments grow (only down payment comes from portfolio)
+            # Investments grow (only down payment + closing costs come from portfolio)
             invested_balance = self.future_value(initial_investment - down_payment_sale, investment_return, duration)
             
-            # Excess cash flow (if any) after mortgage payment gets invested
-            excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+            # Total monthly housing costs = mortgage + property tax + insurance
+            total_monthly_housing = monthly_pmt + monthly_ownership_costs
+            
+            # Excess cash flow (if any) after all housing costs gets invested
+            excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
             invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
             
             # Home appreciates
@@ -407,18 +458,18 @@ class HouseCalculatorGUI:
             home_equity = home_value - remaining_balance
             net_worth = invested_balance + invested_excess + home_equity
             
-            # Total cost = net interest paid + down payment tax + opportunity cost of down payment
+            # Total cost = net interest paid + down payment tax + opportunity cost of down payment + closing costs
             opportunity_cost_dp = self.future_value(down_payment_sale, investment_return, duration) - down_payment_sale
-            total_cost = net_interest + down_payment_tax + opportunity_cost_dp
+            total_cost = net_interest + down_payment_tax + opportunity_cost_dp + closing_costs
             
             return net_worth, total_cost
 
         elif mode == 'hybrid':
-            # Hybrid: some mortgage (price * LTV), rest from stocks
+            # Hybrid: some mortgage (price * LTV), rest from stocks + closing costs
             principal = price * ltv
             
-            # Cash needed from stocks = price - borrowed amount
-            cash_from_stocks = price - principal
+            # Cash needed from stocks = price - borrowed amount + closing costs
+            cash_from_stocks = price - principal + closing_costs
             total_stock_sale, tax_cost, _ = self.gross_sale_needed(cash_from_stocks, cap_gains_tax, cost_basis_ratio)
             
             # Calculate mortgage payment
@@ -435,8 +486,11 @@ class HouseCalculatorGUI:
             # Investments grow
             invested_balance = self.future_value(initial_investment - total_stock_sale, investment_return, duration)
             
-            # Excess cash flow (if any) after mortgage payment gets invested
-            excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+            # Total monthly housing costs = mortgage + property tax + insurance
+            total_monthly_housing = monthly_pmt + monthly_ownership_costs
+            
+            # Excess cash flow (if any) after all housing costs gets invested
+            excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
             invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
             
             # Home appreciates
@@ -446,9 +500,9 @@ class HouseCalculatorGUI:
             home_equity = home_value - remaining_balance
             net_worth = invested_balance + invested_excess + home_equity
             
-            # Total cost = net interest + taxes + opportunity cost of stock sale
+            # Total cost = net interest + taxes + opportunity cost of stock sale + closing costs
             opportunity_cost = self.future_value(total_stock_sale, investment_return, duration) - total_stock_sale
-            total_cost = net_interest + tax_cost + opportunity_cost
+            total_cost = net_interest + tax_cost + opportunity_cost + closing_costs
             
             return net_worth, total_cost
     
@@ -473,6 +527,9 @@ class HouseCalculatorGUI:
             cost_basis_ratio = self.get_percent_value('cost_basis_ratio')
             ltv = self.get_percent_value('ltv_ratio')
             monthly_cash_flow = self.get_numeric_value('monthly_cash_flow')
+            property_tax_rate = self.get_percent_value('property_tax_rate')
+            home_insurance_rate = self.get_percent_value('home_insurance_rate')
+            closing_cost_rate = self.get_percent_value('closing_cost_rate')
 
             years = self.parse_int_list(self.years_var.get())
             terms = self.parse_int_list(self.terms_var.get())
@@ -490,7 +547,8 @@ class HouseCalculatorGUI:
                             nw, cost = self.simulate_scenario(price, down_payment, 0, 0, inv_return,
                                                               house_return, duration, 'cash', ltv,
                                                               cap_gains_tax, income_tax, initial_investment, 
-                                                              monthly_cash_flow, cost_basis_ratio)
+                                                              monthly_cash_flow, cost_basis_ratio,
+                                                              property_tax_rate, home_insurance_rate, closing_cost_rate)
                             records.append([price, duration, ret_case, house_case, 'Cash',
                                             np.round(nw, 2), np.round(cost, 2)])
 
@@ -498,7 +556,8 @@ class HouseCalculatorGUI:
                                 nw_full, cost_full = self.simulate_scenario(price, down_payment, mortgage_rate, term,
                                                                             inv_return, house_return, duration, 'full',
                                                                             ltv, cap_gains_tax, income_tax, initial_investment,
-                                                                            monthly_cash_flow, cost_basis_ratio)
+                                                                            monthly_cash_flow, cost_basis_ratio,
+                                                                            property_tax_rate, home_insurance_rate, closing_cost_rate)
                                 records.append([price, duration, ret_case, house_case, f'Full {term}y',
                                                 np.round(nw_full, 2), np.round(cost_full, 2)])
 
@@ -506,7 +565,8 @@ class HouseCalculatorGUI:
                                 nw_hybrid, cost_hybrid = self.simulate_scenario(price, down_payment, mortgage_rate, term,
                                                                                 inv_return, house_return, duration, 'hybrid',
                                                                                 ltv, cap_gains_tax, income_tax, initial_investment,
-                                                                                monthly_cash_flow, cost_basis_ratio)
+                                                                                monthly_cash_flow, cost_basis_ratio,
+                                                                                property_tax_rate, home_insurance_rate, closing_cost_rate)
                                 records.append([price, duration, ret_case, house_case, f'Hybrid {term}y',
                                                 np.round(nw_hybrid, 2), np.round(cost_hybrid, 2)])
 
