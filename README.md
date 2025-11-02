@@ -2,6 +2,50 @@
 
 A comprehensive Python GUI application to analyze different house purchase scenarios and determine the optimal buying strategy based on various financial parameters.
 
+## Recent Updates (November 2, 2025)
+
+### Critical Accuracy Improvements
+
+1. **Added Monthly Cash Flow Parameter**: The model now includes a monthly cash flow input ($5,000 default) representing money available for mortgage payments or investments.
+
+2. **Fixed Cash Scenario Calculation**: 
+   - **Previously**: Cash scenario appeared artificially low because it didn't account for invested cash flow
+   - **Now**: Correctly adds the future value of monthly cash flow that would have gone to mortgage payments
+
+3. **Tax-Aware Stock Sales**: All scenarios use "gross-up" calculations to determine total stock sales needed to net specific cash amounts after capital gains taxes.
+
+4. **Excess Cash Flow Investment**: Mortgage scenarios now properly invest any remaining cash flow after mortgage payments.
+
+5. **Clarified Hybrid Scenario**: Simplified calculation - cash from stocks = price - borrowed amount.
+
+### Key Model Assumptions
+
+- **Stock sales incur capital gains tax** (default 20%) on gains only
+- **Investment cost basis ratio** (default 60%): Represents what portion of your investment is original principal vs. gains
+  - Example: 60% cost basis = only 40% of sale proceeds are taxable gains
+  - Higher ratio = less tax = more money stays invested
+  - Adjust based on how long you've held investments and their growth
+- **Mortgage payments come from monthly cash flow**, not from selling investments
+- **Excess cash flow is invested** at the expected investment return rate
+- **Mortgage interest is tax-deductible** at your income tax rate
+- **Investment returns compound annually**
+- **Home appreciation compounds annually**
+
+### Understanding Cost Basis
+
+The **Investment Cost Basis Ratio** is crucial for accurate tax calculations:
+
+- **100% cost basis**: No gains (break-even investments) - no capital gains tax
+- **80% cost basis**: Your investments have grown 25% (original $800k → now $1M)
+- **60% cost basis** (default): Investments have grown 67% (original $600k → now $1M)
+- **50% cost basis**: Investments have doubled (original $500k → now $1M)
+- **0% cost basis**: All proceeds are gains (unrealistic, but worst-case scenario)
+
+**Example Impact**: If you need $500k cash with 20% capital gains tax:
+- With 0% cost basis: Must sell $625k, pay $125k tax
+- With 60% cost basis: Must sell $543k, pay $43k tax
+- **Result**: Keep $81k more invested!
+
 ## Setup
 
 ### 1. Virtual Environment

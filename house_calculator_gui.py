@@ -52,7 +52,9 @@ class HouseCalculatorGUI:
         row = self.add_numeric_input(input_frame, "Downside Housing Return (%):", "house_return_downside", -2.0, -10.0, 10.0, 0.1, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Capital Gains Tax (%):", "capital_gains_tax", 20.0, 0.0, 50.0, 0.1, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Income Tax Rate (%):", "income_tax", 24.0, 0.0, 50.0, 0.1, row, kind="percent")
+        row = self.add_numeric_input(input_frame, "Investment Cost Basis (%):", "cost_basis_ratio", 60.0, 0.0, 100.0, 1.0, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Hybrid LTV Ratio (%):", "ltv_ratio", 50.0, 0.0, 100.0, 0.5, row, kind="percent")
+        row = self.add_numeric_input(input_frame, "Monthly Cash Flow ($):", "monthly_cash_flow", 5000, 0, 20000, 100, row, kind="currency")
 
         ttk.Label(input_frame, text="Time Horizons (years, comma-separated):").grid(row=row, column=0, sticky=tk.W, pady=5)
         self.years_var = tk.StringVar(value="3,5,10")
@@ -295,6 +297,14 @@ class HouseCalculatorGUI:
     def future_value(self, principal, rate, years):
         return principal * ((1 + rate) ** years)
     
+    def future_value_annuity(self, monthly_payment, annual_rate, years):
+        """Calculate future value of monthly payments invested at annual_rate"""
+        if monthly_payment == 0 or annual_rate == 0:
+            return monthly_payment * years * 12
+        monthly_rate = (1 + annual_rate) ** (1/12) - 1
+        n_months = years * 12
+        return monthly_payment * (((1 + monthly_rate)**n_months - 1) / monthly_rate)
+    
     def calculate_remaining_balance(self, principal, rate, term_years, years_passed):
         """Calculate remaining mortgage balance after years_passed"""
         if years_passed >= term_years:
@@ -316,33 +326,51 @@ class HouseCalculatorGUI:
         interest_paid = total_paid - principal_paid
         return interest_paid
     
-    def gross_sale_needed(self, net_cash_needed, tax_rate):
+    def gross_sale_needed(self, net_cash_needed, tax_rate, cost_basis_ratio):
+        """
+        Return (gross sale, tax paid, net cash) required to net net_cash_needed from taxable investments.
+        
+        Args:
+            net_cash_needed: The amount of cash needed after taxes
+            tax_rate: Capital gains tax rate
+            cost_basis_ratio: Fraction of investment value that is original principal (not taxable)
+        """
         if net_cash_needed <= 0:
             return 0.0, 0.0, 0.0
-        if tax_rate >= 1:
-            gross_sale = net_cash_needed
-            tax_paid = net_cash_needed
-            return gross_sale, tax_paid, net_cash_needed - tax_paid
-        gross_sale = net_cash_needed / (1 - tax_rate)
-        tax_paid = gross_sale * tax_rate
+        
+        # Calculate taxable portion (gains)
+        taxable_portion = 1 - cost_basis_ratio
+        
+        # Gross sale needed after accounting for tax on gains only
+        gross_sale = net_cash_needed / (1 - (taxable_portion * tax_rate))
+        
+        # Tax is only on the gains portion
+        gains = gross_sale * taxable_portion
+        tax_paid = gains * tax_rate
+        
+        # Net cash = gross_sale - tax_paid
         net_cash = gross_sale - tax_paid
+        
         return gross_sale, tax_paid, net_cash
 
     def simulate_scenario(self, price, down_payment, mortgage_rate, term, investment_return, 
                           housing_return, duration, mode, ltv, cap_gains_tax, income_tax, 
-                          initial_investment):
+                          initial_investment, monthly_cash_flow, cost_basis_ratio):
         """mode = 'cash', 'full', 'hybrid'"""
         if mode == 'cash':
-            # Cash purchase: sell stocks to buy house outright (minus down payment)
-            net_cash_needed = price - down_payment
-            gross_sale, tax_cost, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax)
+            # Cash purchase: sell stocks to buy house outright
+            net_cash_needed = price
+            gross_sale, tax_cost, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax, cost_basis_ratio)
 
             remaining_investments = initial_investment - gross_sale
             invested_balance = self.future_value(remaining_investments, investment_return, duration)
 
+            # BENEFIT: No mortgage payment, so monthly cash flow can be invested
+            invested_cash_flow = self.future_value_annuity(monthly_cash_flow, investment_return, duration)
+
             home_value = price * ((1 + housing_return) ** duration)
 
-            net_worth = invested_balance + home_value
+            net_worth = invested_balance + invested_cash_flow + home_value
 
             opportunity_cost = self.future_value(gross_sale, investment_return, duration) - gross_sale
             total_cost = tax_cost + opportunity_cost
@@ -352,7 +380,10 @@ class HouseCalculatorGUI:
         elif mode == 'full':
             # Full mortgage: borrow (price - down_payment), pay down_payment from stocks
             principal = price - down_payment
-            down_payment_sale, down_payment_tax, _ = self.gross_sale_needed(down_payment, cap_gains_tax)
+            down_payment_sale, down_payment_tax, _ = self.gross_sale_needed(down_payment, cap_gains_tax, cost_basis_ratio)
+            
+            # Calculate mortgage payment
+            monthly_pmt = self.mortgage_payment(principal, mortgage_rate, term)
             
             # Calculate interest paid and remaining balance
             interest_paid = self.calculate_interest_paid(principal, mortgage_rate, term, duration)
@@ -362,17 +393,19 @@ class HouseCalculatorGUI:
             interest_deduction = interest_paid * income_tax
             net_interest = interest_paid - interest_deduction
             
-            # Investments grow, but reduced by monthly mortgage payments
-            # Assume mortgage payments come from cash flow, not investments
-            # Investments = initial - down_payment_sale, then grow
+            # Investments grow (only down payment comes from portfolio)
             invested_balance = self.future_value(initial_investment - down_payment_sale, investment_return, duration)
+            
+            # Excess cash flow (if any) after mortgage payment gets invested
+            excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+            invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
             
             # Home appreciates
             home_value = price * ((1 + housing_return) ** duration)
             
-            # Net worth = investments + home equity - remaining mortgage
+            # Net worth = investments + invested excess cash flow + home equity - remaining mortgage
             home_equity = home_value - remaining_balance
-            net_worth = invested_balance + home_equity
+            net_worth = invested_balance + invested_excess + home_equity
             
             # Total cost = net interest paid + down payment tax + opportunity cost of down payment
             opportunity_cost_dp = self.future_value(down_payment_sale, investment_return, duration) - down_payment_sale
@@ -381,12 +414,15 @@ class HouseCalculatorGUI:
             return net_worth, total_cost
 
         elif mode == 'hybrid':
-            # Hybrid: some mortgage (price * LTV), rest from stocks (minus down payment)
+            # Hybrid: some mortgage (price * LTV), rest from stocks
             principal = price * ltv
-            stock_sale_needed = price - principal - down_payment
-            net_cash_from_sales = down_payment + max(stock_sale_needed, 0)
-
-            total_stock_sale, tax_cost, _ = self.gross_sale_needed(net_cash_from_sales, cap_gains_tax)
+            
+            # Cash needed from stocks = price - borrowed amount
+            cash_from_stocks = price - principal
+            total_stock_sale, tax_cost, _ = self.gross_sale_needed(cash_from_stocks, cap_gains_tax, cost_basis_ratio)
+            
+            # Calculate mortgage payment
+            monthly_pmt = self.mortgage_payment(principal, mortgage_rate, term)
             
             # Calculate interest paid and remaining balance
             interest_paid = self.calculate_interest_paid(principal, mortgage_rate, term, duration)
@@ -399,12 +435,16 @@ class HouseCalculatorGUI:
             # Investments grow
             invested_balance = self.future_value(initial_investment - total_stock_sale, investment_return, duration)
             
+            # Excess cash flow (if any) after mortgage payment gets invested
+            excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+            invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
+            
             # Home appreciates
             home_value = price * ((1 + housing_return) ** duration)
             
-            # Net worth = investments + home equity - remaining mortgage
+            # Net worth = investments + invested excess cash flow + home equity - remaining mortgage
             home_equity = home_value - remaining_balance
-            net_worth = invested_balance + home_equity
+            net_worth = invested_balance + invested_excess + home_equity
             
             # Total cost = net interest + taxes + opportunity cost of stock sale
             opportunity_cost = self.future_value(total_stock_sale, investment_return, duration) - total_stock_sale
@@ -430,7 +470,9 @@ class HouseCalculatorGUI:
 
             cap_gains_tax = self.get_percent_value('capital_gains_tax')
             income_tax = self.get_percent_value('income_tax')
+            cost_basis_ratio = self.get_percent_value('cost_basis_ratio')
             ltv = self.get_percent_value('ltv_ratio')
+            monthly_cash_flow = self.get_numeric_value('monthly_cash_flow')
 
             years = self.parse_int_list(self.years_var.get())
             terms = self.parse_int_list(self.terms_var.get())
@@ -447,21 +489,24 @@ class HouseCalculatorGUI:
                         for house_case, house_return in housing_returns.items():
                             nw, cost = self.simulate_scenario(price, down_payment, 0, 0, inv_return,
                                                               house_return, duration, 'cash', ltv,
-                                                              cap_gains_tax, income_tax, initial_investment)
+                                                              cap_gains_tax, income_tax, initial_investment, 
+                                                              monthly_cash_flow, cost_basis_ratio)
                             records.append([price, duration, ret_case, house_case, 'Cash',
                                             np.round(nw, 2), np.round(cost, 2)])
 
                             for term in terms:
                                 nw_full, cost_full = self.simulate_scenario(price, down_payment, mortgage_rate, term,
                                                                             inv_return, house_return, duration, 'full',
-                                                                            ltv, cap_gains_tax, income_tax, initial_investment)
+                                                                            ltv, cap_gains_tax, income_tax, initial_investment,
+                                                                            monthly_cash_flow, cost_basis_ratio)
                                 records.append([price, duration, ret_case, house_case, f'Full {term}y',
                                                 np.round(nw_full, 2), np.round(cost_full, 2)])
 
                             for term in terms:
                                 nw_hybrid, cost_hybrid = self.simulate_scenario(price, down_payment, mortgage_rate, term,
                                                                                 inv_return, house_return, duration, 'hybrid',
-                                                                                ltv, cap_gains_tax, income_tax, initial_investment)
+                                                                                ltv, cap_gains_tax, income_tax, initial_investment,
+                                                                                monthly_cash_flow, cost_basis_ratio)
                                 records.append([price, duration, ret_case, house_case, f'Hybrid {term}y',
                                                 np.round(nw_hybrid, 2), np.round(cost_hybrid, 2)])
 

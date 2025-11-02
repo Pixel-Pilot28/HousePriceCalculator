@@ -11,6 +11,8 @@ housing_returns = {"expected": 0.02, "downside": -0.02}
 capital_gains_tax = 0.20
 loan_to_value_hybrid = 0.5  # 50% LTV hybrid scenario
 income_tax_rate = 0.24
+monthly_cash_flow = 5_000  # Monthly amount available for mortgage payments or investments
+investment_cost_basis_ratio = 0.6  # 60% of investment value is cost basis (original principal), 40% is gains
 
 years = [3, 5, 10]
 initial_portfolio = 4_000_000
@@ -24,6 +26,14 @@ def mortgage_payment(principal, rate, years):
 
 def future_value(principal, rate, years):
     return principal * ((1 + rate) ** years)
+
+def future_value_annuity(monthly_payment, annual_rate, years):
+    """Calculate future value of monthly payments invested at annual_rate"""
+    if monthly_payment == 0 or annual_rate == 0:
+        return monthly_payment * years * 12
+    monthly_rate = (1 + annual_rate) ** (1/12) - 1
+    n_months = years * 12
+    return monthly_payment * (((1 + monthly_rate)**n_months - 1) / monthly_rate)
 
 def calculate_remaining_balance(principal, rate, term_years, years_passed):
     """Calculate remaining mortgage balance after years_passed"""
@@ -46,32 +56,63 @@ def calculate_interest_paid(principal, rate, term_years, years_passed):
     interest_paid = total_paid - principal_paid
     return interest_paid
 
-def gross_sale_needed(net_cash_needed, tax_rate):
-    """Return (gross sale, tax paid, net cash) required to net net_cash_needed from taxable investments."""
+def gross_sale_needed(net_cash_needed, tax_rate, cost_basis_ratio):
+    """
+    Return (gross sale, tax paid, net cash) required to net net_cash_needed from taxable investments.
+    
+    Args:
+        net_cash_needed: The amount of cash needed after taxes
+        tax_rate: Capital gains tax rate
+        cost_basis_ratio: Fraction of investment value that is original principal (not taxable)
+                         e.g., 0.6 means 60% is cost basis, 40% is gains
+    
+    Example:
+        If you need $100k and cost_basis_ratio=0.6:
+        - You sell $X
+        - Cost basis = $X * 0.6 (not taxed)
+        - Gains = $X * 0.4 (taxed at tax_rate)
+        - Net cash = $X - ($X * 0.4 * tax_rate)
+        - Solve: $X = net_cash_needed / (1 - (1 - cost_basis_ratio) * tax_rate)
+    """
     if net_cash_needed <= 0:
         return 0.0, 0.0, 0.0
-    gross_sale = net_cash_needed / (1 - tax_rate)
-    tax_paid = gross_sale * tax_rate
+    
+    # Calculate taxable portion (gains)
+    taxable_portion = 1 - cost_basis_ratio
+    
+    # Gross sale needed after accounting for tax on gains only
+    gross_sale = net_cash_needed / (1 - (taxable_portion * tax_rate))
+    
+    # Tax is only on the gains portion
+    gains = gross_sale * taxable_portion
+    tax_paid = gains * tax_rate
+    
+    # Verify: net cash should equal gross_sale - tax_paid
     net_cash = gross_sale - tax_paid
+    
     return gross_sale, tax_paid, net_cash
 
 def simulate_scenario(price, mortgage_rate, term, investment_return, housing_return, duration, mode):
     """mode = 'cash', 'full', 'hybrid'"""
     if mode == 'cash':
-        # Cash purchase: sell stocks to buy house outright (minus down payment)
-        net_cash_needed = price - down_payment
-        gross_sale, tax_cost, _ = gross_sale_needed(net_cash_needed, capital_gains_tax)
+        # Cash purchase: sell stocks to buy house outright
+        net_cash_needed = price
+        gross_sale, tax_cost, _ = gross_sale_needed(net_cash_needed, capital_gains_tax, investment_cost_basis_ratio)
         
         # Remaining investments grow
         remaining_investments = initial_portfolio - gross_sale
         invested_balance = future_value(remaining_investments, investment_return, duration)
         
+        # BENEFIT: No mortgage payment, so monthly cash flow can be invested
+        # Use the same cash flow that would have gone to mortgage payments
+        invested_cash_flow = future_value_annuity(monthly_cash_flow, investment_return, duration)
+        
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
         
-        net_worth = invested_balance + home_value
+        net_worth = invested_balance + invested_cash_flow + home_value
         
-        # Total cost = taxes paid + opportunity cost of investments sold
+        # Total cost = taxes paid + opportunity cost of investments sold (cash flow is a benefit, not a cost)
         opportunity_cost = future_value(gross_sale, investment_return, duration) - gross_sale
         total_cost = tax_cost + opportunity_cost
         
@@ -80,10 +121,10 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
     elif mode == 'full':
         # Full mortgage: borrow (price - down_payment), pay down_payment from stocks
         principal = price - down_payment
-        down_payment_sale, down_payment_tax, _ = gross_sale_needed(down_payment, capital_gains_tax)
+        down_payment_sale, down_payment_tax, _ = gross_sale_needed(down_payment, capital_gains_tax, investment_cost_basis_ratio)
         
-        # Monthly mortgage payment
-        monthly_payment = mortgage_payment(principal, mortgage_rate, term)
+        # Calculate mortgage payment
+        monthly_pmt = mortgage_payment(principal, mortgage_rate, term)
         
         # Calculate interest paid and remaining balance
         interest_paid = calculate_interest_paid(principal, mortgage_rate, term, duration)
@@ -93,17 +134,20 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         interest_deduction = interest_paid * income_tax_rate
         net_interest = interest_paid - interest_deduction
         
-        # Investments grow, but reduced by monthly mortgage payments
-        # Assume mortgage payments come from cash flow, not investments
-        # Investments = initial - down_payment_sale, then grow
+        # Investments grow (only down payment comes from portfolio)
+        # Monthly mortgage payments come from cash flow
         invested_balance = future_value(initial_portfolio - down_payment_sale, investment_return, duration)
+        
+        # Excess cash flow (if any) after mortgage payment gets invested
+        excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+        invested_excess = future_value_annuity(excess_cash_flow, investment_return, duration)
         
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
         
-        # Net worth = investments + home equity - remaining mortgage
+        # Net worth = investments + invested excess cash flow + home equity - remaining mortgage
         home_equity = home_value - remaining_balance
-        net_worth = invested_balance + home_equity
+        net_worth = invested_balance + invested_excess + home_equity
         
         # Total cost = net interest paid + down payment tax + opportunity cost of down payment
         opportunity_cost_dp = future_value(down_payment_sale, investment_return, duration) - down_payment_sale
@@ -112,16 +156,16 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         return net_worth, total_cost
 
     elif mode == 'hybrid':
-        # Hybrid: some mortgage (price * LTV), rest from stocks (minus down payment)
+        # Hybrid: some mortgage (price * LTV), rest from stocks
+        # The down payment comes from stocks, and we borrow up to LTV of the price
         principal = price * loan_to_value_hybrid
-        stock_sale_needed = price - principal - down_payment
-        net_cash_from_sales = down_payment + max(stock_sale_needed, 0)
         
-        # Total stock sale includes down payment
-        total_stock_sale, tax_cost, _ = gross_sale_needed(net_cash_from_sales, capital_gains_tax)
+        # Cash needed from stocks = price - borrowed amount
+        cash_from_stocks = price - principal
+        total_stock_sale, tax_cost, _ = gross_sale_needed(cash_from_stocks, capital_gains_tax, investment_cost_basis_ratio)
         
-        # Monthly mortgage payment
-        monthly_payment = mortgage_payment(principal, mortgage_rate, term)
+        # Calculate mortgage payment
+        monthly_pmt = mortgage_payment(principal, mortgage_rate, term)
         
         # Calculate interest paid and remaining balance
         interest_paid = calculate_interest_paid(principal, mortgage_rate, term, duration)
@@ -134,12 +178,16 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         # Investments grow
         invested_balance = future_value(initial_portfolio - total_stock_sale, investment_return, duration)
         
+        # Excess cash flow (if any) after mortgage payment gets invested
+        excess_cash_flow = max(0, monthly_cash_flow - monthly_pmt)
+        invested_excess = future_value_annuity(excess_cash_flow, investment_return, duration)
+        
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
         
-        # Net worth = investments + home equity - remaining mortgage
+        # Net worth = investments + invested excess cash flow + home equity - remaining mortgage
         home_equity = home_value - remaining_balance
-        net_worth = invested_balance + home_equity
+        net_worth = invested_balance + invested_excess + home_equity
         
         # Total cost = net interest + taxes + opportunity cost of stock sale
         opportunity_cost = future_value(total_stock_sale, investment_return, duration) - total_stock_sale
