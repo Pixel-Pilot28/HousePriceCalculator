@@ -6,7 +6,16 @@ A comprehensive Python GUI application to analyze different house purchase scena
 
 ### Critical Accuracy Improvements
 
-1. **Added Property Tax, Home Insurance, and Closing Costs** (Latest):
+1. **Added Bear Market Simulator** (Latest):
+   - **Enable/Disable Toggle**: Turn on/off bear market simulation
+   - **Bear Market Year**: Set when the downturn occurs (default: year 2)
+   - **Market Drop**: Percentage decline during bear market (default: 30%)
+   - **Recovery Years**: Time to recover to normal trajectory (default: 2 years)
+   - Models temporary market downturns and their impact on different buying strategies
+   - Affects both existing investment balances and monthly contributions
+   - Helps evaluate risk exposure across cash vs. mortgage scenarios
+
+2. **Added Property Tax, Home Insurance, and Closing Costs**:
    - **Property Tax Rate**: Default 1.2% of home value annually
    - **Home Insurance Rate**: Default 0.5% of home value annually
    - **Closing Costs**: Default 3% of purchase price (one-time)
@@ -137,8 +146,9 @@ The calculator analyzes three purchase strategies:
 3. **Hybrid**: Combination of cash and mortgage at specified LTV
 
 For each strategy, it calculates:
-- Net worth at each time horizon
+- Net worth at each time horizon (with optional bear market impact)
 - Total cost of the approach
+- Risk exposure to market downturns
 
 ### Output Tabs (Right Panel)
 

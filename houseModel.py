@@ -17,6 +17,12 @@ closing_cost_rate = 0.03  # 3% of purchase price (one-time)
 monthly_cash_flow = 5_000  # Monthly amount available for mortgage payments or investments
 investment_cost_basis_ratio = 0.6  # 60% of investment value is cost basis (original principal), 40% is gains
 
+# Bear market simulator
+bear_market_enabled = False  # Set to True to simulate a temporary market downturn
+bear_market_year = 2  # Year when bear market occurs (e.g., 2 means after 2 years)
+bear_market_drop = 0.30  # Percentage drop (e.g., 0.30 = 30% decrease)
+bear_market_recovery_years = 2  # Years to recover to normal trajectory
+
 years = [3, 5, 10]
 initial_portfolio = 4_000_000
 
@@ -30,6 +36,51 @@ def mortgage_payment(principal, rate, years):
 def future_value(principal, rate, years):
     return principal * ((1 + rate) ** years)
 
+def future_value_with_bear_market(principal, rate, years, bear_enabled, bear_year, bear_drop, bear_recovery_years):
+    """
+    Calculate future value with optional bear market scenario.
+    
+    Args:
+        principal: Initial investment amount
+        rate: Annual rate of return
+        years: Total years to project
+        bear_enabled: Whether to simulate a bear market
+        bear_year: Year when bear market occurs
+        bear_drop: Percentage drop (e.g., 0.30 for 30% decline)
+        bear_recovery_years: Years to recover to normal trajectory
+    
+    Returns:
+        Future value after accounting for bear market
+    """
+    if not bear_enabled or bear_year >= years:
+        # No bear market or it happens after our time horizon
+        return future_value(principal, rate, years)
+    
+    # Grow until bear market
+    value_before_crash = principal * ((1 + rate) ** bear_year)
+    
+    # Apply bear market drop
+    value_after_crash = value_before_crash * (1 - bear_drop)
+    
+    # Calculate remaining years and recovery
+    remaining_years = years - bear_year
+    
+    if remaining_years <= bear_recovery_years:
+        # Partial recovery - interpolate between crash value and normal trajectory
+        normal_trajectory = principal * ((1 + rate) ** years)
+        recovery_fraction = remaining_years / bear_recovery_years
+        final_value = value_after_crash + (normal_trajectory - value_after_crash) * recovery_fraction
+    else:
+        # Full recovery plus continued growth
+        # First recover to normal trajectory over bear_recovery_years
+        normal_at_recovery = principal * ((1 + rate) ** (bear_year + bear_recovery_years))
+        
+        # Then grow normally for remaining years
+        years_after_recovery = remaining_years - bear_recovery_years
+        final_value = normal_at_recovery * ((1 + rate) ** years_after_recovery)
+    
+    return final_value
+
 def future_value_annuity(monthly_payment, annual_rate, years):
     """Calculate future value of monthly payments invested at annual_rate"""
     if monthly_payment == 0 or annual_rate == 0:
@@ -37,6 +88,32 @@ def future_value_annuity(monthly_payment, annual_rate, years):
     monthly_rate = (1 + annual_rate) ** (1/12) - 1
     n_months = years * 12
     return monthly_payment * (((1 + monthly_rate)**n_months - 1) / monthly_rate)
+
+def future_value_annuity_with_bear_market(monthly_payment, annual_rate, years, bear_enabled, bear_year, bear_drop, bear_recovery_years):
+    """
+    Calculate future value of monthly contributions with optional bear market.
+    
+    Contributions made before bear market are affected by the downturn.
+    Contributions made during/after bear market grow normally from their contribution date.
+    """
+    if not bear_enabled or bear_year >= years:
+        return future_value_annuity(monthly_payment, annual_rate, years)
+    
+    # Calculate value of contributions made before bear market
+    pre_bear_contributions = future_value_annuity(monthly_payment, annual_rate, bear_year)
+    
+    # Apply bear market drop to pre-existing balance
+    pre_bear_after_crash = pre_bear_contributions * (1 - bear_drop)
+    
+    # Grow the crashed balance through remaining years
+    remaining_years = years - bear_year
+    pre_bear_final = future_value_with_bear_market(pre_bear_after_crash, annual_rate, remaining_years, 
+                                                    False, 0, 0, 0)  # No additional bear market
+    
+    # Calculate contributions made after bear market (these grow normally)
+    post_bear_contributions = future_value_annuity(monthly_payment, annual_rate, remaining_years)
+    
+    return pre_bear_final + post_bear_contributions
 
 def calculate_remaining_balance(principal, rate, term_years, years_passed):
     """Calculate remaining mortgage balance after years_passed"""
@@ -110,14 +187,18 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_cash_needed = price + closing_costs
         gross_sale, tax_cost, _ = gross_sale_needed(net_cash_needed, capital_gains_tax, investment_cost_basis_ratio)
         
-        # Remaining investments grow
+        # Remaining investments grow (with optional bear market)
         remaining_investments = initial_portfolio - gross_sale
-        invested_balance = future_value(remaining_investments, investment_return, duration)
+        invested_balance = future_value_with_bear_market(remaining_investments, investment_return, duration,
+                                                         bear_market_enabled, bear_market_year, 
+                                                         bear_market_drop, bear_market_recovery_years)
         
         # BENEFIT: No mortgage payment, but still pay property tax & insurance
         # Invest cash flow remaining after ownership costs
         cash_flow_to_invest = max(0, monthly_cash_flow - monthly_ownership_costs)
-        invested_cash_flow = future_value_annuity(cash_flow_to_invest, investment_return, duration)
+        invested_cash_flow = future_value_annuity_with_bear_market(cash_flow_to_invest, investment_return, duration,
+                                                                   bear_market_enabled, bear_market_year,
+                                                                   bear_market_drop, bear_market_recovery_years)
         
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
@@ -125,7 +206,9 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_worth = invested_balance + invested_cash_flow + home_value
         
         # Total cost = taxes + opportunity cost + closing costs
-        opportunity_cost = future_value(gross_sale, investment_return, duration) - gross_sale
+        opportunity_cost = future_value_with_bear_market(gross_sale, investment_return, duration,
+                                                         bear_market_enabled, bear_market_year,
+                                                         bear_market_drop, bear_market_recovery_years) - gross_sale
         total_cost = tax_cost + opportunity_cost + closing_costs
         
         return net_worth, total_cost
@@ -149,14 +232,18 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         
         # Investments grow (only down payment + closing costs come from portfolio)
         # Monthly mortgage payments come from cash flow
-        invested_balance = future_value(initial_portfolio - down_payment_sale, investment_return, duration)
+        invested_balance = future_value_with_bear_market(initial_portfolio - down_payment_sale, investment_return, duration,
+                                                         bear_market_enabled, bear_market_year,
+                                                         bear_market_drop, bear_market_recovery_years)
         
         # Total monthly housing costs = mortgage + property tax + insurance
         total_monthly_housing = monthly_pmt + monthly_ownership_costs
         
         # Excess cash flow (if any) after all housing costs gets invested
         excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
-        invested_excess = future_value_annuity(excess_cash_flow, investment_return, duration)
+        invested_excess = future_value_annuity_with_bear_market(excess_cash_flow, investment_return, duration,
+                                                                bear_market_enabled, bear_market_year,
+                                                                bear_market_drop, bear_market_recovery_years)
         
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
@@ -166,7 +253,9 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_worth = invested_balance + invested_excess + home_equity
         
         # Total cost = net interest paid + down payment tax + opportunity cost of down payment + closing costs
-        opportunity_cost_dp = future_value(down_payment_sale, investment_return, duration) - down_payment_sale
+        opportunity_cost_dp = future_value_with_bear_market(down_payment_sale, investment_return, duration,
+                                                            bear_market_enabled, bear_market_year,
+                                                            bear_market_drop, bear_market_recovery_years) - down_payment_sale
         total_cost = net_interest + down_payment_tax + opportunity_cost_dp + closing_costs
         
         return net_worth, total_cost
@@ -192,14 +281,18 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_interest = interest_paid - interest_deduction
         
         # Investments grow
-        invested_balance = future_value(initial_portfolio - total_stock_sale, investment_return, duration)
+        invested_balance = future_value_with_bear_market(initial_portfolio - total_stock_sale, investment_return, duration,
+                                                         bear_market_enabled, bear_market_year,
+                                                         bear_market_drop, bear_market_recovery_years)
         
         # Total monthly housing costs = mortgage + property tax + insurance
         total_monthly_housing = monthly_pmt + monthly_ownership_costs
         
         # Excess cash flow (if any) after all housing costs gets invested
         excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
-        invested_excess = future_value_annuity(excess_cash_flow, investment_return, duration)
+        invested_excess = future_value_annuity_with_bear_market(excess_cash_flow, investment_return, duration,
+                                                                bear_market_enabled, bear_market_year,
+                                                                bear_market_drop, bear_market_recovery_years)
         
         # Home appreciates
         home_value = price * ((1 + housing_return) ** duration)
@@ -209,7 +302,9 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_worth = invested_balance + invested_excess + home_equity
         
         # Total cost = net interest + taxes + opportunity cost of stock sale + closing costs
-        opportunity_cost = future_value(total_stock_sale, investment_return, duration) - total_stock_sale
+        opportunity_cost = future_value_with_bear_market(total_stock_sale, investment_return, duration,
+                                                         bear_market_enabled, bear_market_year,
+                                                         bear_market_drop, bear_market_recovery_years) - total_stock_sale
         total_cost = net_interest + tax_cost + opportunity_cost + closing_costs
         
         return net_worth, total_cost

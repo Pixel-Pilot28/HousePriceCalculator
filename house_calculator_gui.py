@@ -92,6 +92,20 @@ class HouseCalculatorGUI:
         row = self.add_numeric_input(input_frame, "Home Insurance Rate (%):", "home_insurance_rate", 0.5, 0.0, 3.0, 0.1, row, kind="percent")
         row = self.add_numeric_input(input_frame, "Closing Cost Rate (%):", "closing_cost_rate", 3.0, 0.0, 10.0, 0.1, row, kind="percent")
 
+        # Bear Market Simulator Section
+        ttk.Label(input_frame, text="Bear Market Simulator:", font=('TkDefaultFont', 10, 'bold')).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(15, 5))
+        row += 1
+
+        ttk.Label(input_frame, text="Enable Bear Market:").grid(row=row, column=0, sticky=tk.W, pady=5)
+        self.bear_enabled_var = tk.BooleanVar(value=False)
+        bear_check = ttk.Checkbutton(input_frame, variable=self.bear_enabled_var, command=self.schedule_recalculate)
+        bear_check.grid(row=row, column=1, sticky=tk.W, pady=5)
+        row += 1
+
+        row = self.add_numeric_input(input_frame, "Bear Market Year:", "bear_year", 2, 0, 20, 1, row, kind="number")
+        row = self.add_numeric_input(input_frame, "Market Drop (%):", "bear_drop", 30.0, 0.0, 80.0, 1.0, row, kind="percent")
+        row = self.add_numeric_input(input_frame, "Recovery Years:", "bear_recovery", 2, 0, 10, 1, row, kind="number")
+
         ttk.Label(input_frame, text="Time Horizons (years, comma-separated):").grid(row=row, column=0, sticky=tk.W, pady=5)
         self.years_var = tk.StringVar(value="3,5,10")
         years_entry = ttk.Entry(input_frame, textvariable=self.years_var, width=15)
@@ -333,6 +347,33 @@ class HouseCalculatorGUI:
     def future_value(self, principal, rate, years):
         return principal * ((1 + rate) ** years)
     
+    def future_value_with_bear_market(self, principal, rate, years, bear_enabled, bear_year, bear_drop, bear_recovery_years):
+        """Calculate future value with optional bear market scenario"""
+        if not bear_enabled or bear_year >= years:
+            return self.future_value(principal, rate, years)
+        
+        # Grow until bear market
+        value_before_crash = principal * ((1 + rate) ** bear_year)
+        
+        # Apply bear market drop
+        value_after_crash = value_before_crash * (1 - bear_drop)
+        
+        # Calculate remaining years and recovery
+        remaining_years = years - bear_year
+        
+        if remaining_years <= bear_recovery_years:
+            # Partial recovery - interpolate between crash value and normal trajectory
+            normal_trajectory = principal * ((1 + rate) ** years)
+            recovery_fraction = remaining_years / bear_recovery_years
+            final_value = value_after_crash + (normal_trajectory - value_after_crash) * recovery_fraction
+        else:
+            # Full recovery plus continued growth
+            normal_at_recovery = principal * ((1 + rate) ** (bear_year + bear_recovery_years))
+            years_after_recovery = remaining_years - bear_recovery_years
+            final_value = normal_at_recovery * ((1 + rate) ** years_after_recovery)
+        
+        return final_value
+    
     def future_value_annuity(self, monthly_payment, annual_rate, years):
         """Calculate future value of monthly payments invested at annual_rate"""
         if monthly_payment == 0 or annual_rate == 0:
@@ -340,6 +381,27 @@ class HouseCalculatorGUI:
         monthly_rate = (1 + annual_rate) ** (1/12) - 1
         n_months = years * 12
         return monthly_payment * (((1 + monthly_rate)**n_months - 1) / monthly_rate)
+    
+    def future_value_annuity_with_bear_market(self, monthly_payment, annual_rate, years, bear_enabled, bear_year, bear_drop, bear_recovery_years):
+        """Calculate future value of monthly contributions with optional bear market"""
+        if not bear_enabled or bear_year >= years:
+            return self.future_value_annuity(monthly_payment, annual_rate, years)
+        
+        # Calculate value of contributions made before bear market
+        pre_bear_contributions = self.future_value_annuity(monthly_payment, annual_rate, bear_year)
+        
+        # Apply bear market drop to pre-existing balance
+        pre_bear_after_crash = pre_bear_contributions * (1 - bear_drop)
+        
+        # Grow the crashed balance through remaining years
+        remaining_years = years - bear_year
+        pre_bear_final = self.future_value_with_bear_market(pre_bear_after_crash, annual_rate, remaining_years,
+                                                             False, 0, 0, 0)
+        
+        # Calculate contributions made after bear market (these grow normally)
+        post_bear_contributions = self.future_value_annuity(monthly_payment, annual_rate, remaining_years)
+        
+        return pre_bear_final + post_bear_contributions
     
     def calculate_remaining_balance(self, principal, rate, term_years, years_passed):
         """Calculate remaining mortgage balance after years_passed"""
@@ -392,7 +454,8 @@ class HouseCalculatorGUI:
     def simulate_scenario(self, price, down_payment, mortgage_rate, term, investment_return, 
                           housing_return, duration, mode, ltv, cap_gains_tax, income_tax, 
                           initial_investment, monthly_cash_flow, cost_basis_ratio,
-                          property_tax_rate, home_insurance_rate, closing_cost_rate):
+                          property_tax_rate, home_insurance_rate, closing_cost_rate,
+                          bear_enabled, bear_year, bear_drop, bear_recovery):
         """mode = 'cash', 'full', 'hybrid'"""
         # Calculate one-time closing costs
         closing_costs = price * closing_cost_rate
@@ -408,18 +471,21 @@ class HouseCalculatorGUI:
             gross_sale, tax_cost, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax, cost_basis_ratio)
 
             remaining_investments = initial_investment - gross_sale
-            invested_balance = self.future_value(remaining_investments, investment_return, duration)
+            invested_balance = self.future_value_with_bear_market(remaining_investments, investment_return, duration,
+                                                                  bear_enabled, bear_year, bear_drop, bear_recovery)
 
             # BENEFIT: No mortgage payment, but still pay property tax & insurance
             # Invest cash flow remaining after ownership costs
             cash_flow_to_invest = max(0, monthly_cash_flow - monthly_ownership_costs)
-            invested_cash_flow = self.future_value_annuity(cash_flow_to_invest, investment_return, duration)
+            invested_cash_flow = self.future_value_annuity_with_bear_market(cash_flow_to_invest, investment_return, duration,
+                                                                            bear_enabled, bear_year, bear_drop, bear_recovery)
 
             home_value = price * ((1 + housing_return) ** duration)
 
             net_worth = invested_balance + invested_cash_flow + home_value
 
-            opportunity_cost = self.future_value(gross_sale, investment_return, duration) - gross_sale
+            opportunity_cost = self.future_value_with_bear_market(gross_sale, investment_return, duration,
+                                                                  bear_enabled, bear_year, bear_drop, bear_recovery) - gross_sale
             total_cost = tax_cost + opportunity_cost + closing_costs
 
             return net_worth, total_cost
@@ -442,14 +508,16 @@ class HouseCalculatorGUI:
             net_interest = interest_paid - interest_deduction
             
             # Investments grow (only down payment + closing costs come from portfolio)
-            invested_balance = self.future_value(initial_investment - down_payment_sale, investment_return, duration)
+            invested_balance = self.future_value_with_bear_market(initial_investment - down_payment_sale, investment_return, duration,
+                                                                  bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Total monthly housing costs = mortgage + property tax + insurance
             total_monthly_housing = monthly_pmt + monthly_ownership_costs
             
             # Excess cash flow (if any) after all housing costs gets invested
             excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
-            invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
+            invested_excess = self.future_value_annuity_with_bear_market(excess_cash_flow, investment_return, duration,
+                                                                         bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Home appreciates
             home_value = price * ((1 + housing_return) ** duration)
@@ -459,7 +527,8 @@ class HouseCalculatorGUI:
             net_worth = invested_balance + invested_excess + home_equity
             
             # Total cost = net interest paid + down payment tax + opportunity cost of down payment + closing costs
-            opportunity_cost_dp = self.future_value(down_payment_sale, investment_return, duration) - down_payment_sale
+            opportunity_cost_dp = self.future_value_with_bear_market(down_payment_sale, investment_return, duration,
+                                                                     bear_enabled, bear_year, bear_drop, bear_recovery) - down_payment_sale
             total_cost = net_interest + down_payment_tax + opportunity_cost_dp + closing_costs
             
             return net_worth, total_cost
@@ -484,14 +553,16 @@ class HouseCalculatorGUI:
             net_interest = interest_paid - interest_deduction
             
             # Investments grow
-            invested_balance = self.future_value(initial_investment - total_stock_sale, investment_return, duration)
+            invested_balance = self.future_value_with_bear_market(initial_investment - total_stock_sale, investment_return, duration,
+                                                                  bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Total monthly housing costs = mortgage + property tax + insurance
             total_monthly_housing = monthly_pmt + monthly_ownership_costs
             
             # Excess cash flow (if any) after all housing costs gets invested
             excess_cash_flow = max(0, monthly_cash_flow - total_monthly_housing)
-            invested_excess = self.future_value_annuity(excess_cash_flow, investment_return, duration)
+            invested_excess = self.future_value_annuity_with_bear_market(excess_cash_flow, investment_return, duration,
+                                                                         bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Home appreciates
             home_value = price * ((1 + housing_return) ** duration)
@@ -501,7 +572,8 @@ class HouseCalculatorGUI:
             net_worth = invested_balance + invested_excess + home_equity
             
             # Total cost = net interest + taxes + opportunity cost of stock sale + closing costs
-            opportunity_cost = self.future_value(total_stock_sale, investment_return, duration) - total_stock_sale
+            opportunity_cost = self.future_value_with_bear_market(total_stock_sale, investment_return, duration,
+                                                                  bear_enabled, bear_year, bear_drop, bear_recovery) - total_stock_sale
             total_cost = net_interest + tax_cost + opportunity_cost + closing_costs
             
             return net_worth, total_cost
@@ -530,6 +602,12 @@ class HouseCalculatorGUI:
             property_tax_rate = self.get_percent_value('property_tax_rate')
             home_insurance_rate = self.get_percent_value('home_insurance_rate')
             closing_cost_rate = self.get_percent_value('closing_cost_rate')
+            
+            # Bear market parameters
+            bear_enabled = self.bear_enabled_var.get()
+            bear_year = int(self.get_numeric_value('bear_year'))
+            bear_drop = self.get_percent_value('bear_drop')
+            bear_recovery = int(self.get_numeric_value('bear_recovery'))
 
             years = self.parse_int_list(self.years_var.get())
             terms = self.parse_int_list(self.terms_var.get())
@@ -548,7 +626,8 @@ class HouseCalculatorGUI:
                                                               house_return, duration, 'cash', ltv,
                                                               cap_gains_tax, income_tax, initial_investment, 
                                                               monthly_cash_flow, cost_basis_ratio,
-                                                              property_tax_rate, home_insurance_rate, closing_cost_rate)
+                                                              property_tax_rate, home_insurance_rate, closing_cost_rate,
+                                                              bear_enabled, bear_year, bear_drop, bear_recovery)
                             records.append([price, duration, ret_case, house_case, 'Cash',
                                             np.round(nw, 2), np.round(cost, 2)])
 
@@ -557,7 +636,8 @@ class HouseCalculatorGUI:
                                                                             inv_return, house_return, duration, 'full',
                                                                             ltv, cap_gains_tax, income_tax, initial_investment,
                                                                             monthly_cash_flow, cost_basis_ratio,
-                                                                            property_tax_rate, home_insurance_rate, closing_cost_rate)
+                                                                            property_tax_rate, home_insurance_rate, closing_cost_rate,
+                                                                            bear_enabled, bear_year, bear_drop, bear_recovery)
                                 records.append([price, duration, ret_case, house_case, f'Full {term}y',
                                                 np.round(nw_full, 2), np.round(cost_full, 2)])
 
@@ -566,7 +646,8 @@ class HouseCalculatorGUI:
                                                                                 inv_return, house_return, duration, 'hybrid',
                                                                                 ltv, cap_gains_tax, income_tax, initial_investment,
                                                                                 monthly_cash_flow, cost_basis_ratio,
-                                                                                property_tax_rate, home_insurance_rate, closing_cost_rate)
+                                                                                property_tax_rate, home_insurance_rate, closing_cost_rate,
+                                                                                bear_enabled, bear_year, bear_drop, bear_recovery)
                                 records.append([price, duration, ret_case, house_case, f'Hybrid {term}y',
                                                 np.round(nw_hybrid, 2), np.round(cost_hybrid, 2)])
 
