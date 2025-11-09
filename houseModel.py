@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 
 # --- Input parameters ---
-purchase_prices = [500_000, 600_000]
+purchase_prices = [550_000, 600_000]
 down_payment = 200_000
-mortgage_rates = [0.063]  # 6.3%
+mortgage_rates = [0.057]  # 5.7%
 terms = [15, 30]
 investment_returns = {"expected": 0.07, "downside": 0.04}
 housing_returns = {"expected": 0.02, "downside": -0.02}
@@ -23,11 +23,14 @@ bear_market_year = 2  # Year when bear market occurs (e.g., 2 means after 2 year
 bear_market_drop = 0.30  # Percentage drop (e.g., 0.30 = 30% decrease)
 bear_market_recovery_years = 2  # Years to recover to normal trajectory
 
-years = [3, 5, 10]
+years = [3, 5, 7, 10]
 initial_portfolio = 4_000_000
 
 # --- Helper functions ---
 def mortgage_payment(principal, rate, years):
+    """Return monthly payment; handle zero-rate loans explicitly."""
+    if rate == 0:
+        return principal / (years * 12)
     monthly_rate = rate / 12
     n_payments = years * 12
     payment = principal * (monthly_rate * (1 + monthly_rate)**n_payments) / ((1 + monthly_rate)**n_payments - 1)
@@ -52,34 +55,63 @@ def future_value_with_bear_market(principal, rate, years, bear_enabled, bear_yea
     Returns:
         Future value after accounting for bear market
     """
-    if not bear_enabled or bear_year >= years:
+    if principal <= 0:
+        return 0.0
+    if not bear_enabled or bear_year < 0 or bear_year >= years or bear_drop <= 0:
         # No bear market or it happens after our time horizon
         return future_value(principal, rate, years)
     
     # Grow until bear market
     value_before_crash = principal * ((1 + rate) ** bear_year)
     
-    # Apply bear market drop
-    value_after_crash = value_before_crash * (1 - bear_drop)
-    
     # Calculate remaining years and recovery
     remaining_years = years - bear_year
     
-    if remaining_years <= bear_recovery_years:
-        # Partial recovery - interpolate between crash value and normal trajectory
-        normal_trajectory = principal * ((1 + rate) ** years)
-        recovery_fraction = remaining_years / bear_recovery_years
-        final_value = value_after_crash + (normal_trajectory - value_after_crash) * recovery_fraction
-    else:
-        # Full recovery plus continued growth
-        # First recover to normal trajectory over bear_recovery_years
-        normal_at_recovery = principal * ((1 + rate) ** (bear_year + bear_recovery_years))
-        
-        # Then grow normally for remaining years
-        years_after_recovery = remaining_years - bear_recovery_years
-        final_value = normal_at_recovery * ((1 + rate) ** years_after_recovery)
+    return _recover_after_crash(value_before_crash, rate, remaining_years, bear_drop, bear_recovery_years)
+
+
+def _recover_after_crash(pre_crash_value, rate, years_after_crash, bear_drop, bear_recovery_years):
+    """
+    Grow a balance through a crash with partial recovery.
     
-    return final_value
+    Model: After crash, portfolio grows at normal rate but never fully recovers
+    to original trajectory. This represents market "scarring" effects where
+    bear markets have permanent wealth impacts.
+    """
+    if pre_crash_value <= 0:
+        return 0.0
+
+    post_crash_value = pre_crash_value * (1 - bear_drop)
+
+    if years_after_crash <= 0:
+        return post_crash_value
+
+    if bear_drop <= 0:
+        return pre_crash_value * ((1 + rate) ** years_after_crash)
+
+    if bear_recovery_years <= 0:
+        # No recovery period specified - grow from crashed value at normal rate
+        return post_crash_value * ((1 + rate) ** years_after_crash)
+
+    # Calculate what crashed value would grow to at normal rate
+    crashed_final = post_crash_value * ((1 + rate) ** years_after_crash)
+    
+    # Calculate what original trajectory would be
+    normal_final = pre_crash_value * ((1 + rate) ** years_after_crash)
+    
+    # During recovery period, interpolate between crashed path and partial recovery
+    # Recovery closes the gap by a fraction, not 100%
+    if years_after_crash <= bear_recovery_years:
+        # Partial recovery during recovery window
+        recovery_fraction = years_after_crash / bear_recovery_years
+        # Close 70% of the gap to normal trajectory
+        recovery_factor = 0.70
+        return crashed_final + (normal_final - crashed_final) * recovery_fraction * recovery_factor
+    else:
+        # After recovery period ends, maintain 70% gap closure
+        recovery_factor = 0.70
+        final_gap = (normal_final - crashed_final) * recovery_factor
+        return crashed_final + final_gap
 
 def future_value_annuity(monthly_payment, annual_rate, years):
     """Calculate future value of monthly payments invested at annual_rate"""
@@ -101,14 +133,9 @@ def future_value_annuity_with_bear_market(monthly_payment, annual_rate, years, b
     
     # Calculate value of contributions made before bear market
     pre_bear_contributions = future_value_annuity(monthly_payment, annual_rate, bear_year)
-    
-    # Apply bear market drop to pre-existing balance
-    pre_bear_after_crash = pre_bear_contributions * (1 - bear_drop)
-    
-    # Grow the crashed balance through remaining years
     remaining_years = years - bear_year
-    pre_bear_final = future_value_with_bear_market(pre_bear_after_crash, annual_rate, remaining_years, 
-                                                    False, 0, 0, 0)  # No additional bear market
+
+    pre_bear_final = _recover_after_crash(pre_bear_contributions, annual_rate, remaining_years, bear_drop, bear_recovery_years)
     
     # Calculate contributions made after bear market (these grow normally)
     post_bear_contributions = future_value_annuity(monthly_payment, annual_rate, remaining_years)
@@ -119,6 +146,9 @@ def calculate_remaining_balance(principal, rate, term_years, years_passed):
     """Calculate remaining mortgage balance after years_passed"""
     if years_passed >= term_years:
         return 0
+    if rate == 0:
+        paid_fraction = min(1.0, years_passed / term_years)
+        return principal * (1 - paid_fraction)
     monthly_rate = rate / 12
     n_total = term_years * 12
     n_passed = years_passed * 12
@@ -127,7 +157,8 @@ def calculate_remaining_balance(principal, rate, term_years, years_passed):
 
 def calculate_interest_paid(principal, rate, term_years, years_passed):
     """Calculate total interest paid over years_passed"""
-    monthly_rate = rate / 12
+    if rate == 0:
+        return 0.0
     monthly_payment = mortgage_payment(principal, rate, term_years)
     n_payments = min(years_passed * 12, term_years * 12)
     
@@ -189,6 +220,9 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         
         # Remaining investments grow (with optional bear market)
         remaining_investments = initial_portfolio - gross_sale
+        if remaining_investments < -1e-9:
+            raise ValueError("Initial portfolio is insufficient for a cash purchase at this price")
+        remaining_investments = max(0.0, remaining_investments)
         invested_balance = future_value_with_bear_market(remaining_investments, investment_return, duration,
                                                          bear_market_enabled, bear_market_year, 
                                                          bear_market_drop, bear_market_recovery_years)
@@ -232,7 +266,11 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         
         # Investments grow (only down payment + closing costs come from portfolio)
         # Monthly mortgage payments come from cash flow
-        invested_balance = future_value_with_bear_market(initial_portfolio - down_payment_sale, investment_return, duration,
+        remaining_portfolio = initial_portfolio - down_payment_sale
+        if remaining_portfolio < -1e-9:
+            raise ValueError("Initial portfolio is insufficient to cover down payment and closing costs")
+        remaining_portfolio = max(0.0, remaining_portfolio)
+        invested_balance = future_value_with_bear_market(remaining_portfolio, investment_return, duration,
                                                          bear_market_enabled, bear_market_year,
                                                          bear_market_drop, bear_market_recovery_years)
         
@@ -281,7 +319,11 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         net_interest = interest_paid - interest_deduction
         
         # Investments grow
-        invested_balance = future_value_with_bear_market(initial_portfolio - total_stock_sale, investment_return, duration,
+        remaining_portfolio = initial_portfolio - total_stock_sale
+        if remaining_portfolio < -1e-9:
+            raise ValueError("Initial portfolio is insufficient for the hybrid scenario cash requirement")
+        remaining_portfolio = max(0.0, remaining_portfolio)
+        invested_balance = future_value_with_bear_market(remaining_portfolio, investment_return, duration,
                                                          bear_market_enabled, bear_market_year,
                                                          bear_market_drop, bear_market_recovery_years)
         
@@ -320,15 +362,18 @@ def run_simulation():
                     nw, cost = simulate_scenario(price, 0, 0, inv_return, house_return, duration, 'cash')
                     records.append([price, duration, ret_case, house_case, 'Cash', np.round(nw, 2), np.round(cost, 2)])
 
-                    # Full mortgage 15y and 30y
-                    for term in terms:
-                        nw, cost = simulate_scenario(price, 0.063, term, inv_return, house_return, duration, 'full')
-                        records.append([price, duration, ret_case, house_case, f'Full {term}y', np.round(nw, 2), np.round(cost, 2)])
+                    for mort_rate in mortgage_rates:
+                        # Full mortgage scenarios
+                        for term in terms:
+                            nw, cost = simulate_scenario(price, mort_rate, term, inv_return, house_return, duration, 'full')
+                            scenario_label = f'Full {term}y' if len(mortgage_rates) == 1 else f'Full {term}y @{mort_rate:.3f}'
+                            records.append([price, duration, ret_case, house_case, scenario_label, np.round(nw, 2), np.round(cost, 2)])
 
-                    # Hybrid
-                    for term in terms:
-                        nw, cost = simulate_scenario(price, 0.063, term, inv_return, house_return, duration, 'hybrid')
-                        records.append([price, duration, ret_case, house_case, f'Hybrid {term}y', np.round(nw, 2), np.round(cost, 2)])
+                        # Hybrid scenarios
+                        for term in terms:
+                            nw, cost = simulate_scenario(price, mort_rate, term, inv_return, house_return, duration, 'hybrid')
+                            scenario_label = f'Hybrid {term}y' if len(mortgage_rates) == 1 else f'Hybrid {term}y @{mort_rate:.3f}'
+                            records.append([price, duration, ret_case, house_case, scenario_label, np.round(nw, 2), np.round(cost, 2)])
 
     df = pd.DataFrame(records, columns=['Price', 'Years', 'Return Case', 'Housing Case', 'Scenario', 'Net Worth', 'Total Cost'])
     return df

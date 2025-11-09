@@ -337,8 +337,9 @@ class HouseCalculatorGUI:
         best_scroll.pack(side=tk.RIGHT, fill=tk.Y)
     
     def mortgage_payment(self, principal, rate, years):
+        """Return monthly payment; handle zero-rate loans explicitly."""
         if rate == 0:
-            return 0
+            return principal / (years * 12)
         monthly_rate = rate / 12
         n_payments = years * 12
         payment = principal * (monthly_rate * (1 + monthly_rate)**n_payments) / ((1 + monthly_rate)**n_payments - 1)
@@ -349,30 +350,59 @@ class HouseCalculatorGUI:
     
     def future_value_with_bear_market(self, principal, rate, years, bear_enabled, bear_year, bear_drop, bear_recovery_years):
         """Calculate future value with optional bear market scenario"""
-        if not bear_enabled or bear_year >= years:
+        if principal <= 0:
+            return 0.0
+        if not bear_enabled or bear_year < 0 or bear_year >= years or bear_drop <= 0:
             return self.future_value(principal, rate, years)
         
         # Grow until bear market
         value_before_crash = principal * ((1 + rate) ** bear_year)
-        
-        # Apply bear market drop
-        value_after_crash = value_before_crash * (1 - bear_drop)
-        
-        # Calculate remaining years and recovery
         remaining_years = years - bear_year
+
+        return self._recover_after_crash(value_before_crash, rate, remaining_years, bear_drop, bear_recovery_years)
+
+    def _recover_after_crash(self, pre_crash_value, rate, years_after_crash, bear_drop, bear_recovery_years):
+        """
+        Grow a balance through a crash with partial recovery.
         
-        if remaining_years <= bear_recovery_years:
-            # Partial recovery - interpolate between crash value and normal trajectory
-            normal_trajectory = principal * ((1 + rate) ** years)
-            recovery_fraction = remaining_years / bear_recovery_years
-            final_value = value_after_crash + (normal_trajectory - value_after_crash) * recovery_fraction
+        Model: After crash, portfolio grows at normal rate but never fully recovers
+        to original trajectory. This represents market "scarring" effects where
+        bear markets have permanent wealth impacts.
+        """
+        if pre_crash_value <= 0:
+            return 0.0
+
+        post_crash_value = pre_crash_value * (1 - bear_drop)
+
+        if years_after_crash <= 0:
+            return post_crash_value
+
+        if bear_drop <= 0:
+            return pre_crash_value * ((1 + rate) ** years_after_crash)
+
+        if bear_recovery_years <= 0:
+            # No recovery period specified - grow from crashed value at normal rate
+            return post_crash_value * ((1 + rate) ** years_after_crash)
+
+        # Calculate what crashed value would grow to at normal rate
+        crashed_final = post_crash_value * ((1 + rate) ** years_after_crash)
+        
+        # Calculate what original trajectory would be
+        normal_final = pre_crash_value * ((1 + rate) ** years_after_crash)
+        
+        # During recovery period, interpolate between crashed path and partial recovery
+        # Recovery closes the gap by a fraction, not 100%
+        if years_after_crash <= bear_recovery_years:
+            # Partial recovery during recovery window
+            recovery_fraction = years_after_crash / bear_recovery_years
+            # Close 70% of the gap to normal trajectory
+            recovery_factor = 0.70
+            return crashed_final + (normal_final - crashed_final) * recovery_fraction * recovery_factor
         else:
-            # Full recovery plus continued growth
-            normal_at_recovery = principal * ((1 + rate) ** (bear_year + bear_recovery_years))
-            years_after_recovery = remaining_years - bear_recovery_years
-            final_value = normal_at_recovery * ((1 + rate) ** years_after_recovery)
-        
-        return final_value
+            # After recovery period ends, maintain 70% gap closure
+            recovery_factor = 0.70
+            final_gap = (normal_final - crashed_final) * recovery_factor
+            return crashed_final + final_gap
     
     def future_value_annuity(self, monthly_payment, annual_rate, years):
         """Calculate future value of monthly payments invested at annual_rate"""
@@ -389,14 +419,8 @@ class HouseCalculatorGUI:
         
         # Calculate value of contributions made before bear market
         pre_bear_contributions = self.future_value_annuity(monthly_payment, annual_rate, bear_year)
-        
-        # Apply bear market drop to pre-existing balance
-        pre_bear_after_crash = pre_bear_contributions * (1 - bear_drop)
-        
-        # Grow the crashed balance through remaining years
         remaining_years = years - bear_year
-        pre_bear_final = self.future_value_with_bear_market(pre_bear_after_crash, annual_rate, remaining_years,
-                                                             False, 0, 0, 0)
+        pre_bear_final = self._recover_after_crash(pre_bear_contributions, annual_rate, remaining_years, bear_drop, bear_recovery_years)
         
         # Calculate contributions made after bear market (these grow normally)
         post_bear_contributions = self.future_value_annuity(monthly_payment, annual_rate, remaining_years)
@@ -407,6 +431,9 @@ class HouseCalculatorGUI:
         """Calculate remaining mortgage balance after years_passed"""
         if years_passed >= term_years:
             return 0
+        if rate == 0:
+            paid_fraction = min(1.0, years_passed / term_years)
+            return principal * (1 - paid_fraction)
         monthly_rate = rate / 12
         n_total = term_years * 12
         n_passed = years_passed * 12
@@ -415,7 +442,8 @@ class HouseCalculatorGUI:
     
     def calculate_interest_paid(self, principal, rate, term_years, years_passed):
         """Calculate total interest paid over years_passed"""
-        monthly_rate = rate / 12
+        if rate == 0:
+            return 0.0
         monthly_payment = self.mortgage_payment(principal, rate, term_years)
         n_payments = min(years_passed * 12, term_years * 12)
         
@@ -471,6 +499,9 @@ class HouseCalculatorGUI:
             gross_sale, tax_cost, _ = self.gross_sale_needed(net_cash_needed, cap_gains_tax, cost_basis_ratio)
 
             remaining_investments = initial_investment - gross_sale
+            if remaining_investments < -1e-9:
+                raise ValueError("Initial portfolio is insufficient for a cash purchase at this price")
+            remaining_investments = max(0.0, remaining_investments)
             invested_balance = self.future_value_with_bear_market(remaining_investments, investment_return, duration,
                                                                   bear_enabled, bear_year, bear_drop, bear_recovery)
 
@@ -508,7 +539,11 @@ class HouseCalculatorGUI:
             net_interest = interest_paid - interest_deduction
             
             # Investments grow (only down payment + closing costs come from portfolio)
-            invested_balance = self.future_value_with_bear_market(initial_investment - down_payment_sale, investment_return, duration,
+            remaining_portfolio = initial_investment - down_payment_sale
+            if remaining_portfolio < -1e-9:
+                raise ValueError("Initial portfolio is insufficient to cover down payment and closing costs")
+            remaining_portfolio = max(0.0, remaining_portfolio)
+            invested_balance = self.future_value_with_bear_market(remaining_portfolio, investment_return, duration,
                                                                   bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Total monthly housing costs = mortgage + property tax + insurance
@@ -553,7 +588,11 @@ class HouseCalculatorGUI:
             net_interest = interest_paid - interest_deduction
             
             # Investments grow
-            invested_balance = self.future_value_with_bear_market(initial_investment - total_stock_sale, investment_return, duration,
+            remaining_portfolio = initial_investment - total_stock_sale
+            if remaining_portfolio < -1e-9:
+                raise ValueError("Initial portfolio is insufficient for the hybrid scenario cash requirement")
+            remaining_portfolio = max(0.0, remaining_portfolio)
+            invested_balance = self.future_value_with_bear_market(remaining_portfolio, investment_return, duration,
                                                                   bear_enabled, bear_year, bear_drop, bear_recovery)
             
             # Total monthly housing costs = mortgage + property tax + insurance
