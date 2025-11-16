@@ -515,11 +515,10 @@ class HouseCalculatorGUI:
 
             net_worth = invested_balance + invested_cash_flow + home_value
 
-            opportunity_cost = self.future_value_with_bear_market(gross_sale, investment_return, duration,
-                                                                  bear_enabled, bear_year, bear_drop, bear_recovery) - gross_sale
-            total_cost = tax_cost + opportunity_cost + closing_costs
+            # Out-of-pocket cost = taxes + closing costs (NO opportunity cost - already in net worth)
+            out_of_pocket_cost = tax_cost + closing_costs
 
-            return net_worth, total_cost
+            return net_worth, out_of_pocket_cost
 
         elif mode == 'full':
             # Full mortgage: borrow (price - down_payment), pay down_payment + closing costs from stocks
@@ -561,12 +560,10 @@ class HouseCalculatorGUI:
             home_equity = home_value - remaining_balance
             net_worth = invested_balance + invested_excess + home_equity
             
-            # Total cost = net interest paid + down payment tax + opportunity cost of down payment + closing costs
-            opportunity_cost_dp = self.future_value_with_bear_market(down_payment_sale, investment_return, duration,
-                                                                     bear_enabled, bear_year, bear_drop, bear_recovery) - down_payment_sale
-            total_cost = net_interest + down_payment_tax + opportunity_cost_dp + closing_costs
+            # Out-of-pocket cost = net interest + taxes + closing costs (NO opportunity cost - already in net worth)
+            out_of_pocket_cost = net_interest + down_payment_tax + closing_costs
             
-            return net_worth, total_cost
+            return net_worth, out_of_pocket_cost
 
         elif mode == 'hybrid':
             # Hybrid: some mortgage (price * LTV), rest from stocks + closing costs
@@ -610,12 +607,10 @@ class HouseCalculatorGUI:
             home_equity = home_value - remaining_balance
             net_worth = invested_balance + invested_excess + home_equity
             
-            # Total cost = net interest + taxes + opportunity cost of stock sale + closing costs
-            opportunity_cost = self.future_value_with_bear_market(total_stock_sale, investment_return, duration,
-                                                                  bear_enabled, bear_year, bear_drop, bear_recovery) - total_stock_sale
-            total_cost = net_interest + tax_cost + opportunity_cost + closing_costs
+            # Out-of-pocket cost = net interest + taxes + closing costs (NO opportunity cost - already in net worth)
+            out_of_pocket_cost = net_interest + tax_cost + closing_costs
             
-            return net_worth, total_cost
+            return net_worth, out_of_pocket_cost
     
     def calculate(self, silent=False):
         if self._pending_calc is not None:
@@ -691,7 +686,7 @@ class HouseCalculatorGUI:
                                                 np.round(nw_hybrid, 2), np.round(cost_hybrid, 2)])
 
             self.df = pd.DataFrame(records, columns=['Price', 'Years', 'Return Case', 'Housing Case',
-                                                     'Scenario', 'Net Worth', 'Total Cost'])
+                                                     'Scenario', 'Net Worth', 'Out-of-Pocket Cost'])
 
             self.update_table()
             self.update_chart()
@@ -720,7 +715,7 @@ class HouseCalculatorGUI:
         # Format columns
         for col in columns:
             self.tree.heading(col, text=col)
-            if col in ['Net Worth', 'Total Cost', 'Price']:
+            if col in ['Net Worth', 'Out-of-Pocket Cost', 'Price']:
                 self.tree.column(col, width=120, anchor=tk.E)
             else:
                 self.tree.column(col, width=100, anchor=tk.CENTER)
@@ -730,7 +725,7 @@ class HouseCalculatorGUI:
             values = []
             for col in columns:
                 val = row[col]
-                if col in ['Net Worth', 'Total Cost', 'Price']:
+                if col in ['Net Worth', 'Out-of-Pocket Cost', 'Price']:
                     values.append(f"${val:,.0f}")
                 else:
                     values.append(val)
@@ -826,13 +821,13 @@ class HouseCalculatorGUI:
                             best_nw = subset.loc[subset['Net Worth'].idxmax()]
                             output.append(f"  Best Net Worth: {best_nw['Scenario']}")
                             output.append(f"    Net Worth: ${best_nw['Net Worth']:,.0f}")
-                            output.append(f"    Total Cost: ${best_nw['Total Cost']:,.0f}")
+                            output.append(f"    Out-of-Pocket Cost: ${best_nw['Out-of-Pocket Cost']:,.0f}")
                             
-                            # Best by total cost (lowest)
-                            best_cost = subset.loc[subset['Total Cost'].idxmin()]
-                            output.append(f"  Lowest Total Cost: {best_cost['Scenario']}")
+                            # Best by out-of-pocket cost (lowest)
+                            best_cost = subset.loc[subset['Out-of-Pocket Cost'].idxmin()]
+                            output.append(f"  Lowest Out-of-Pocket Cost: {best_cost['Scenario']}")
                             output.append(f"    Net Worth: ${best_cost['Net Worth']:,.0f}")
-                            output.append(f"    Total Cost: ${best_cost['Total Cost']:,.0f}")
+                            output.append(f"    Out-of-Pocket Cost: ${best_cost['Out-of-Pocket Cost']:,.0f}")
                             
                             output.append("")
         

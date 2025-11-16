@@ -239,13 +239,10 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         
         net_worth = invested_balance + invested_cash_flow + home_value
         
-        # Total cost = taxes + opportunity cost + closing costs
-        opportunity_cost = future_value_with_bear_market(gross_sale, investment_return, duration,
-                                                         bear_market_enabled, bear_market_year,
-                                                         bear_market_drop, bear_market_recovery_years) - gross_sale
-        total_cost = tax_cost + opportunity_cost + closing_costs
+        # Out-of-pocket cost = taxes + closing costs (NO opportunity cost - already in net worth)
+        out_of_pocket_cost = tax_cost + closing_costs
         
-        return net_worth, total_cost
+        return net_worth, out_of_pocket_cost
 
     elif mode == 'full':
         # Full mortgage: borrow (price - down_payment), pay down_payment + closing costs from stocks
@@ -290,13 +287,10 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         home_equity = home_value - remaining_balance
         net_worth = invested_balance + invested_excess + home_equity
         
-        # Total cost = net interest paid + down payment tax + opportunity cost of down payment + closing costs
-        opportunity_cost_dp = future_value_with_bear_market(down_payment_sale, investment_return, duration,
-                                                            bear_market_enabled, bear_market_year,
-                                                            bear_market_drop, bear_market_recovery_years) - down_payment_sale
-        total_cost = net_interest + down_payment_tax + opportunity_cost_dp + closing_costs
+        # Out-of-pocket cost = net interest + taxes + closing costs (NO opportunity cost - already in net worth)
+        out_of_pocket_cost = net_interest + down_payment_tax + closing_costs
         
-        return net_worth, total_cost
+        return net_worth, out_of_pocket_cost
 
     elif mode == 'hybrid':
         # Hybrid: some mortgage (price * LTV), rest from stocks + closing costs
@@ -343,13 +337,10 @@ def simulate_scenario(price, mortgage_rate, term, investment_return, housing_ret
         home_equity = home_value - remaining_balance
         net_worth = invested_balance + invested_excess + home_equity
         
-        # Total cost = net interest + taxes + opportunity cost of stock sale + closing costs
-        opportunity_cost = future_value_with_bear_market(total_stock_sale, investment_return, duration,
-                                                         bear_market_enabled, bear_market_year,
-                                                         bear_market_drop, bear_market_recovery_years) - total_stock_sale
-        total_cost = net_interest + tax_cost + opportunity_cost + closing_costs
+        # Out-of-pocket cost = net interest + taxes + closing costs (NO opportunity cost - already in net worth)
+        out_of_pocket_cost = net_interest + tax_cost + closing_costs
         
-        return net_worth, total_cost
+        return net_worth, out_of_pocket_cost
 
 def run_simulation():
     records = []
@@ -375,7 +366,7 @@ def run_simulation():
                             scenario_label = f'Hybrid {term}y' if len(mortgage_rates) == 1 else f'Hybrid {term}y @{mort_rate:.3f}'
                             records.append([price, duration, ret_case, house_case, scenario_label, np.round(nw, 2), np.round(cost, 2)])
 
-    df = pd.DataFrame(records, columns=['Price', 'Years', 'Return Case', 'Housing Case', 'Scenario', 'Net Worth', 'Total Cost'])
+    df = pd.DataFrame(records, columns=['Price', 'Years', 'Return Case', 'Housing Case', 'Scenario', 'Net Worth', 'Out-of-Pocket Cost'])
     return df
 
 
